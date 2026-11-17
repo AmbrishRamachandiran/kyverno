@@ -6,14 +6,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	valid "github.com/asaskevich/govalidator"
+	"github.com/kyverno/kyverno/api/kyverno"
 	"github.com/kyverno/kyverno/ext/wildcard"
 	osutils "github.com/kyverno/kyverno/pkg/utils/os"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/kube-openapi/pkg/validation/strfmt"
 )
 
 // These constants MUST be equal to the corresponding names in service definition in definitions/install.yaml
@@ -48,6 +52,8 @@ const (
 	PolicyValidatingWebhookName = "validate-policy.kyverno.svc"
 	// ValidatingWebhookName ...
 	ValidatingWebhookName = "validate.kyverno.svc"
+	// GenerationLabelProtectionWebhookName validates controller-owned generation labels.
+	GenerationLabelProtectionWebhookName = "protect-generation-labels.kyverno.svc"
 	// PolicyMutatingWebhookName default policy mutating webhook name
 	PolicyMutatingWebhookName = "mutate-policy.kyverno.svc"
 	// MutatingWebhookName default resource mutating webhook name
@@ -60,12 +66,20 @@ const (
 	NamespacedValidatingPolicyWebhookName = "nvpol.validate.kyverno.svc"
 	// GeneratingPolicyWebhookName defines default webhook name for generatingpolicies
 	GeneratingPolicyWebhookName = "gpol.validate.kyverno.svc"
+	// NamespacedGeneratingPolicyWebhookName defines default webhook name for namespacedgeneratingpolicies
+	NamespacedGeneratingPolicyWebhookName = "ngpol.validate.kyverno.svc"
 	// MutatingPolicyWebhookName defines default webhook name for mutatingpolicies
 	MutatingPolicyWebhookName = "mpol.validate.kyverno.svc"
+	// NamespacedMutatingPolicyWebhookName defines default webhook name for namespacedmutatingpolicies
+	NamespacedMutatingPolicyWebhookName = "nmpol.validate.kyverno.svc"
 	// ImageValidatingPolicyWebhookName defines default validating webhook name for imagevalidatingpolicies
 	ImageValidatingPolicyValidateWebhookName = "ivpol.validate.kyverno.svc"
 	// ImageValidatingPolicyWebhookName defines default mutating webhook name for imagevalidatingpolicies
 	ImageValidatingPolicyMutateWebhookName = "ivpol.mutate.kyverno.svc"
+	// NamespacedImageValidatingPolicyValidateWebhookName defines default validating webhook name for namespacedimagevalidatingpolicies
+	NamespacedImageValidatingPolicyValidateWebhookName = "nivpol.validate.kyverno.svc"
+	// NamespacedImageValidatingPolicyMutateWebhookName defines default mutating webhook name for namespacedimagevalidatingpolicies
+	NamespacedImageValidatingPolicyMutateWebhookName = "nivpol.mutate.kyverno.svc"
 )
 
 // paths
@@ -74,6 +88,8 @@ const (
 	PolicyValidatingWebhookServicePath = "/policyvalidate"
 	// ValidatingWebhookServicePath is the path for validation webhook
 	ValidatingWebhookServicePath = "/validate"
+	// GenerationLabelProtectionWebhookServicePath validates generation metadata without evaluating policies.
+	GenerationLabelProtectionWebhookServicePath = "/protect-generation-labels"
 	// ExceptionValidatingWebhookServicePath is the path for policy exception validation webhook(used to validate policy exception resource)
 	ExceptionValidatingWebhookServicePath = "/exceptionvalidate"
 	// CELExceptionValidatingWebhookServicePath is the path for CEL PolicyException validation webhook(used to validate CEL PolicyException resource)
@@ -110,11 +126,14 @@ const (
 	excludeRoles                  = "excludeRoles"
 	excludeClusterRoles           = "excludeClusterRoles"
 	generateSuccessEvents         = "generateSuccessEvents"
+	successEventActions           = "successEventActions"
 	webhooks                      = "webhooks"
 	webhookAnnotations            = "webhookAnnotations"
 	webhookLabels                 = "webhookLabels"
 	matchConditions               = "matchConditions"
 	updateRequestThreshold        = "updateRequestThreshold"
+	enableUpdateRequestCleanup    = "enableUpdateRequestCleanup"
+	updateRequestCleanupTTL       = "updateRequestCleanupTTL"
 	maxContextSize                = "maxContextSize"
 )
 
@@ -196,6 +215,8 @@ type Configuration interface {
 	ToFilter(kind schema.GroupVersionKind, subresource, namespace, name string) bool
 	// GetGenerateSuccessEvents return if should generate success events
 	GetGenerateSuccessEvents() bool
+	// GetSuccessEventActions returns the set of event actions for which success events should be generated
+	GetSuccessEventActions() sets.Set[string]
 	// GetWebhook returns the webhook config
 	GetWebhook() WebhookConfig
 	// GetWebhookAnnotations returns annotations to set on webhook configs
@@ -210,6 +231,10 @@ type Configuration interface {
 	OnChanged(func())
 	// GetUpdateRequestThreshold gets the threshold limit for the total number of updaterequests
 	GetUpdateRequestThreshold() int64
+	// GetEnableUpdateRequestCleanup returns if update request cleanup is enabled
+	GetEnableUpdateRequestCleanup() bool
+	// GetUpdateRequestCleanupTTL returns the TTL for update request cleanup
+	GetUpdateRequestCleanupTTL() string
 	// GetMaxContextSize gets the maximum context size in bytes for policy evaluation
 	GetMaxContextSize() int64
 }
@@ -223,6 +248,7 @@ type configuration struct {
 	inclusions                    match
 	filters                       []filter
 	generateSuccessEvents         bool
+	successEventActions           sets.Set[string]
 	webhook                       WebhookConfig
 	webhookAnnotations            map[string]string
 	webhookLabels                 map[string]string
@@ -230,6 +256,8 @@ type configuration struct {
 	mux                           sync.RWMutex
 	callbacks                     []func()
 	updateRequestThreshold        int64
+	enableUpdateRequestCleanup    bool
+	updateRequestCleanupTTL       string
 	maxContextSize                int64
 }
 
@@ -280,6 +308,8 @@ func NewDefaultConfiguration(skipResourceFilters bool) *configuration {
 		skipResourceFilters:           skipResourceFilters,
 		defaultRegistry:               "docker.io",
 		enableDefaultRegistryMutation: true,
+		updateRequestThreshold:        UpdateRequestThreshold,
+		maxContextSize:                DefaultMaxContextSize,
 	}
 }
 
@@ -337,6 +367,12 @@ func (cd *configuration) GetGenerateSuccessEvents() bool {
 	return cd.generateSuccessEvents
 }
 
+func (cd *configuration) GetSuccessEventActions() sets.Set[string] {
+	cd.mux.RLock()
+	defer cd.mux.RUnlock()
+	return cd.successEventActions
+}
+
 func (cd *configuration) GetWebhook() WebhookConfig {
 	cd.mux.RLock()
 	defer cd.mux.RUnlock()
@@ -365,6 +401,18 @@ func (cd *configuration) GetUpdateRequestThreshold() int64 {
 	cd.mux.RLock()
 	defer cd.mux.RUnlock()
 	return cd.updateRequestThreshold
+}
+
+func (cd *configuration) GetEnableUpdateRequestCleanup() bool {
+	cd.mux.RLock()
+	defer cd.mux.RUnlock()
+	return cd.enableUpdateRequestCleanup
+}
+
+func (cd *configuration) GetUpdateRequestCleanupTTL() string {
+	cd.mux.RLock()
+	defer cd.mux.RUnlock()
+	return cd.updateRequestCleanupTTL
 }
 
 func (cd *configuration) GetMaxContextSize() int64 {
@@ -397,6 +445,7 @@ func (cd *configuration) load(cm *corev1.ConfigMap) {
 	cd.inclusions = match{}
 	cd.filters = []filter{}
 	cd.generateSuccessEvents = false
+	cd.successEventActions = sets.New[string]()
 	cd.webhook = WebhookConfig{}
 	cd.webhookAnnotations = nil
 	cd.webhookLabels = nil
@@ -479,6 +528,22 @@ func (cd *configuration) load(cm *corev1.ConfigMap) {
 			logger.V(2).Info("generateSuccessEvents configured")
 		}
 	}
+	// load successEventActions
+	successEventActions, ok := data[successEventActions]
+	if !ok {
+		logger.V(2).Info("successEventActions not set")
+	} else {
+		logger := logger.WithValues("successEventActions", successEventActions)
+		actions := sets.New[string]()
+		for _, action := range strings.Split(successEventActions, ",") {
+			action = strings.TrimSpace(action)
+			if action != "" {
+				actions.Insert(action)
+			}
+		}
+		cd.successEventActions = actions
+		logger.V(2).Info("successEventActions configured")
+	}
 	// load webhooks
 	webhooks, ok := data[webhooks]
 	if !ok {
@@ -537,15 +602,55 @@ func (cd *configuration) load(cm *corev1.ConfigMap) {
 	}
 	threshold, ok := data[updateRequestThreshold]
 	if !ok {
-		logger.V(2).Info("enableDefaultRegistryMutation not set")
+		logger.V(2).Info("updateRequestThreshold not set")
 	} else {
-		logger := logger.WithValues("enableDefaultRegistryMutation", enableDefaultRegistryMutation)
+		logger := logger.WithValues("updateRequestThreshold", threshold)
 		urThreshold, err := strconv.ParseInt(threshold, 10, 64)
 		if err != nil {
-			logger.Error(err, "enableDefaultRegistryMutation is not a boolean")
+			logger.Error(err, "updateRequestThreshold is not an integer")
 		} else {
 			cd.updateRequestThreshold = urThreshold
-			logger.V(2).Info("enableDefaultRegistryMutation configured")
+			logger.V(2).Info("updateRequestThreshold configured")
+		}
+	}
+	// load enableUpdateRequestCleanup
+	cd.enableUpdateRequestCleanup = false
+	enableCleanup, ok := data[enableUpdateRequestCleanup]
+	if !ok {
+		logger.V(2).Info("enableUpdateRequestCleanup not set")
+	} else {
+		enableCleanupBool, err := strconv.ParseBool(enableCleanup)
+		if err != nil {
+			logger.Error(err, "enableUpdateRequestCleanup is not a boolean")
+		} else {
+			cd.enableUpdateRequestCleanup = enableCleanupBool
+			logger.V(2).Info("enableUpdateRequestCleanup configured")
+		}
+	}
+	// load updateRequestCleanupTTL
+	cd.updateRequestCleanupTTL = ""
+	ttl, ok := data[updateRequestCleanupTTL]
+	if !ok {
+		logger.V(2).Info("updateRequestCleanupTTL not set")
+	} else {
+		// Validate the TTL format
+		duration, err := strfmt.ParseDuration(ttl)
+		if err == nil {
+			if duration <= 0 {
+				err = errors.New("duration must be strictly positive")
+			}
+		} else {
+			_, err = time.Parse(kyverno.ValueTtlDateTimeLayout, ttl)
+			if err != nil {
+				_, err = time.Parse(kyverno.ValueTtlDateLayout, ttl)
+			}
+		}
+
+		if err != nil {
+			logger.Error(err, "invalid updateRequestCleanupTTL", "ttl", ttl)
+		} else {
+			cd.updateRequestCleanupTTL = ttl
+			logger.V(2).Info("updateRequestCleanupTTL configured")
 		}
 	}
 	// load maxContextSize (supports Kubernetes quantity format: 100Mi, 2Gi, etc.)
@@ -574,10 +679,15 @@ func (cd *configuration) unload() {
 	cd.inclusions = match{}
 	cd.filters = []filter{}
 	cd.generateSuccessEvents = false
+	cd.successEventActions = sets.New[string]()
 	cd.webhook = WebhookConfig{}
 	cd.webhookAnnotations = nil
 	cd.webhookLabels = nil
+	cd.matchConditions = nil
+	cd.updateRequestThreshold = UpdateRequestThreshold
 	cd.maxContextSize = DefaultMaxContextSize
+	cd.enableUpdateRequestCleanup = false
+	cd.updateRequestCleanupTTL = ""
 	logger.V(2).Info("configuration unloaded")
 }
 

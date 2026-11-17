@@ -15,8 +15,6 @@ import (
 	authorizationv1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/authorizationv1beta1"
 	autoscalingv1 "github.com/kyverno/kyverno/pkg/clients/kube/autoscalingv1"
 	autoscalingv2 "github.com/kyverno/kyverno/pkg/clients/kube/autoscalingv2"
-	autoscalingv2beta1 "github.com/kyverno/kyverno/pkg/clients/kube/autoscalingv2beta1"
-	autoscalingv2beta2 "github.com/kyverno/kyverno/pkg/clients/kube/autoscalingv2beta2"
 	batchv1 "github.com/kyverno/kyverno/pkg/clients/kube/batchv1"
 	batchv1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/batchv1beta1"
 	certificatesv1 "github.com/kyverno/kyverno/pkg/clients/kube/certificatesv1"
@@ -37,6 +35,7 @@ import (
 	flowcontrolv1beta2 "github.com/kyverno/kyverno/pkg/clients/kube/flowcontrolv1beta2"
 	flowcontrolv1beta3 "github.com/kyverno/kyverno/pkg/clients/kube/flowcontrolv1beta3"
 	internalv1alpha1 "github.com/kyverno/kyverno/pkg/clients/kube/internalv1alpha1"
+	lifecyclev1alpha1 "github.com/kyverno/kyverno/pkg/clients/kube/lifecyclev1alpha1"
 	networkingv1 "github.com/kyverno/kyverno/pkg/clients/kube/networkingv1"
 	networkingv1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/networkingv1beta1"
 	nodev1 "github.com/kyverno/kyverno/pkg/clients/kube/nodev1"
@@ -52,8 +51,9 @@ import (
 	resourcev1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/resourcev1beta1"
 	resourcev1beta2 "github.com/kyverno/kyverno/pkg/clients/kube/resourcev1beta2"
 	schedulingv1 "github.com/kyverno/kyverno/pkg/clients/kube/schedulingv1"
-	schedulingv1alpha1 "github.com/kyverno/kyverno/pkg/clients/kube/schedulingv1alpha1"
+	schedulingv1alpha3 "github.com/kyverno/kyverno/pkg/clients/kube/schedulingv1alpha3"
 	schedulingv1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/schedulingv1beta1"
+	storagemigrationv1 "github.com/kyverno/kyverno/pkg/clients/kube/storagemigrationv1"
 	storagemigrationv1beta1 "github.com/kyverno/kyverno/pkg/clients/kube/storagemigrationv1beta1"
 	storagev1 "github.com/kyverno/kyverno/pkg/clients/kube/storagev1"
 	storagev1alpha1 "github.com/kyverno/kyverno/pkg/clients/kube/storagev1alpha1"
@@ -75,8 +75,6 @@ import (
 	k8s_io_client_go_kubernetes_typed_authorization_v1beta1 "k8s.io/client-go/kubernetes/typed/authorization/v1beta1"
 	k8s_io_client_go_kubernetes_typed_autoscaling_v1 "k8s.io/client-go/kubernetes/typed/autoscaling/v1"
 	k8s_io_client_go_kubernetes_typed_autoscaling_v2 "k8s.io/client-go/kubernetes/typed/autoscaling/v2"
-	k8s_io_client_go_kubernetes_typed_autoscaling_v2beta1 "k8s.io/client-go/kubernetes/typed/autoscaling/v2beta1"
-	k8s_io_client_go_kubernetes_typed_autoscaling_v2beta2 "k8s.io/client-go/kubernetes/typed/autoscaling/v2beta2"
 	k8s_io_client_go_kubernetes_typed_batch_v1 "k8s.io/client-go/kubernetes/typed/batch/v1"
 	k8s_io_client_go_kubernetes_typed_batch_v1beta1 "k8s.io/client-go/kubernetes/typed/batch/v1beta1"
 	k8s_io_client_go_kubernetes_typed_certificates_v1 "k8s.io/client-go/kubernetes/typed/certificates/v1"
@@ -95,6 +93,7 @@ import (
 	k8s_io_client_go_kubernetes_typed_flowcontrol_v1beta1 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta1"
 	k8s_io_client_go_kubernetes_typed_flowcontrol_v1beta2 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta2"
 	k8s_io_client_go_kubernetes_typed_flowcontrol_v1beta3 "k8s.io/client-go/kubernetes/typed/flowcontrol/v1beta3"
+	k8s_io_client_go_kubernetes_typed_lifecycle_v1alpha1 "k8s.io/client-go/kubernetes/typed/lifecycle/v1alpha1"
 	k8s_io_client_go_kubernetes_typed_networking_v1 "k8s.io/client-go/kubernetes/typed/networking/v1"
 	k8s_io_client_go_kubernetes_typed_networking_v1beta1 "k8s.io/client-go/kubernetes/typed/networking/v1beta1"
 	k8s_io_client_go_kubernetes_typed_node_v1 "k8s.io/client-go/kubernetes/typed/node/v1"
@@ -110,16 +109,17 @@ import (
 	k8s_io_client_go_kubernetes_typed_resource_v1beta1 "k8s.io/client-go/kubernetes/typed/resource/v1beta1"
 	k8s_io_client_go_kubernetes_typed_resource_v1beta2 "k8s.io/client-go/kubernetes/typed/resource/v1beta2"
 	k8s_io_client_go_kubernetes_typed_scheduling_v1 "k8s.io/client-go/kubernetes/typed/scheduling/v1"
-	k8s_io_client_go_kubernetes_typed_scheduling_v1alpha1 "k8s.io/client-go/kubernetes/typed/scheduling/v1alpha1"
+	k8s_io_client_go_kubernetes_typed_scheduling_v1alpha3 "k8s.io/client-go/kubernetes/typed/scheduling/v1alpha3"
 	k8s_io_client_go_kubernetes_typed_scheduling_v1beta1 "k8s.io/client-go/kubernetes/typed/scheduling/v1beta1"
 	k8s_io_client_go_kubernetes_typed_storage_v1 "k8s.io/client-go/kubernetes/typed/storage/v1"
 	k8s_io_client_go_kubernetes_typed_storage_v1alpha1 "k8s.io/client-go/kubernetes/typed/storage/v1alpha1"
 	k8s_io_client_go_kubernetes_typed_storage_v1beta1 "k8s.io/client-go/kubernetes/typed/storage/v1beta1"
+	k8s_io_client_go_kubernetes_typed_storagemigration_v1 "k8s.io/client-go/kubernetes/typed/storagemigration/v1"
 	k8s_io_client_go_kubernetes_typed_storagemigration_v1beta1 "k8s.io/client-go/kubernetes/typed/storagemigration/v1beta1"
 )
 
 type clientset struct {
-	discovery                     k8s_io_client_go_discovery.DiscoveryInterface
+	discovery                     k8s_io_client_go_discovery.DiscoveryInterfaces
 	admissionregistrationv1       k8s_io_client_go_kubernetes_typed_admissionregistration_v1.AdmissionregistrationV1Interface
 	admissionregistrationv1alpha1 k8s_io_client_go_kubernetes_typed_admissionregistration_v1alpha1.AdmissionregistrationV1alpha1Interface
 	admissionregistrationv1beta1  k8s_io_client_go_kubernetes_typed_admissionregistration_v1beta1.AdmissionregistrationV1beta1Interface
@@ -133,8 +133,6 @@ type clientset struct {
 	authorizationv1beta1          k8s_io_client_go_kubernetes_typed_authorization_v1beta1.AuthorizationV1beta1Interface
 	autoscalingv1                 k8s_io_client_go_kubernetes_typed_autoscaling_v1.AutoscalingV1Interface
 	autoscalingv2                 k8s_io_client_go_kubernetes_typed_autoscaling_v2.AutoscalingV2Interface
-	autoscalingv2beta1            k8s_io_client_go_kubernetes_typed_autoscaling_v2beta1.AutoscalingV2beta1Interface
-	autoscalingv2beta2            k8s_io_client_go_kubernetes_typed_autoscaling_v2beta2.AutoscalingV2beta2Interface
 	batchv1                       k8s_io_client_go_kubernetes_typed_batch_v1.BatchV1Interface
 	batchv1beta1                  k8s_io_client_go_kubernetes_typed_batch_v1beta1.BatchV1beta1Interface
 	certificatesv1                k8s_io_client_go_kubernetes_typed_certificates_v1.CertificatesV1Interface
@@ -154,6 +152,7 @@ type clientset struct {
 	flowcontrolv1beta2            k8s_io_client_go_kubernetes_typed_flowcontrol_v1beta2.FlowcontrolV1beta2Interface
 	flowcontrolv1beta3            k8s_io_client_go_kubernetes_typed_flowcontrol_v1beta3.FlowcontrolV1beta3Interface
 	internalv1alpha1              k8s_io_client_go_kubernetes_typed_apiserverinternal_v1alpha1.InternalV1alpha1Interface
+	lifecyclev1alpha1             k8s_io_client_go_kubernetes_typed_lifecycle_v1alpha1.LifecycleV1alpha1Interface
 	networkingv1                  k8s_io_client_go_kubernetes_typed_networking_v1.NetworkingV1Interface
 	networkingv1beta1             k8s_io_client_go_kubernetes_typed_networking_v1beta1.NetworkingV1beta1Interface
 	nodev1                        k8s_io_client_go_kubernetes_typed_node_v1.NodeV1Interface
@@ -169,15 +168,16 @@ type clientset struct {
 	resourcev1beta1               k8s_io_client_go_kubernetes_typed_resource_v1beta1.ResourceV1beta1Interface
 	resourcev1beta2               k8s_io_client_go_kubernetes_typed_resource_v1beta2.ResourceV1beta2Interface
 	schedulingv1                  k8s_io_client_go_kubernetes_typed_scheduling_v1.SchedulingV1Interface
-	schedulingv1alpha1            k8s_io_client_go_kubernetes_typed_scheduling_v1alpha1.SchedulingV1alpha1Interface
+	schedulingv1alpha3            k8s_io_client_go_kubernetes_typed_scheduling_v1alpha3.SchedulingV1alpha3Interface
 	schedulingv1beta1             k8s_io_client_go_kubernetes_typed_scheduling_v1beta1.SchedulingV1beta1Interface
 	storagev1                     k8s_io_client_go_kubernetes_typed_storage_v1.StorageV1Interface
 	storagev1alpha1               k8s_io_client_go_kubernetes_typed_storage_v1alpha1.StorageV1alpha1Interface
 	storagev1beta1                k8s_io_client_go_kubernetes_typed_storage_v1beta1.StorageV1beta1Interface
+	storagemigrationv1            k8s_io_client_go_kubernetes_typed_storagemigration_v1.StoragemigrationV1Interface
 	storagemigrationv1beta1       k8s_io_client_go_kubernetes_typed_storagemigration_v1beta1.StoragemigrationV1beta1Interface
 }
 
-func (c *clientset) Discovery() k8s_io_client_go_discovery.DiscoveryInterface {
+func (c *clientset) Discovery() k8s_io_client_go_discovery.DiscoveryInterfaces {
 	return c.discovery
 }
 func (c *clientset) AdmissionregistrationV1() k8s_io_client_go_kubernetes_typed_admissionregistration_v1.AdmissionregistrationV1Interface {
@@ -218,12 +218,6 @@ func (c *clientset) AutoscalingV1() k8s_io_client_go_kubernetes_typed_autoscalin
 }
 func (c *clientset) AutoscalingV2() k8s_io_client_go_kubernetes_typed_autoscaling_v2.AutoscalingV2Interface {
 	return c.autoscalingv2
-}
-func (c *clientset) AutoscalingV2beta1() k8s_io_client_go_kubernetes_typed_autoscaling_v2beta1.AutoscalingV2beta1Interface {
-	return c.autoscalingv2beta1
-}
-func (c *clientset) AutoscalingV2beta2() k8s_io_client_go_kubernetes_typed_autoscaling_v2beta2.AutoscalingV2beta2Interface {
-	return c.autoscalingv2beta2
 }
 func (c *clientset) BatchV1() k8s_io_client_go_kubernetes_typed_batch_v1.BatchV1Interface {
 	return c.batchv1
@@ -282,6 +276,9 @@ func (c *clientset) FlowcontrolV1beta3() k8s_io_client_go_kubernetes_typed_flowc
 func (c *clientset) InternalV1alpha1() k8s_io_client_go_kubernetes_typed_apiserverinternal_v1alpha1.InternalV1alpha1Interface {
 	return c.internalv1alpha1
 }
+func (c *clientset) LifecycleV1alpha1() k8s_io_client_go_kubernetes_typed_lifecycle_v1alpha1.LifecycleV1alpha1Interface {
+	return c.lifecyclev1alpha1
+}
 func (c *clientset) NetworkingV1() k8s_io_client_go_kubernetes_typed_networking_v1.NetworkingV1Interface {
 	return c.networkingv1
 }
@@ -327,8 +324,8 @@ func (c *clientset) ResourceV1beta2() k8s_io_client_go_kubernetes_typed_resource
 func (c *clientset) SchedulingV1() k8s_io_client_go_kubernetes_typed_scheduling_v1.SchedulingV1Interface {
 	return c.schedulingv1
 }
-func (c *clientset) SchedulingV1alpha1() k8s_io_client_go_kubernetes_typed_scheduling_v1alpha1.SchedulingV1alpha1Interface {
-	return c.schedulingv1alpha1
+func (c *clientset) SchedulingV1alpha3() k8s_io_client_go_kubernetes_typed_scheduling_v1alpha3.SchedulingV1alpha3Interface {
+	return c.schedulingv1alpha3
 }
 func (c *clientset) SchedulingV1beta1() k8s_io_client_go_kubernetes_typed_scheduling_v1beta1.SchedulingV1beta1Interface {
 	return c.schedulingv1beta1
@@ -341,6 +338,9 @@ func (c *clientset) StorageV1alpha1() k8s_io_client_go_kubernetes_typed_storage_
 }
 func (c *clientset) StorageV1beta1() k8s_io_client_go_kubernetes_typed_storage_v1beta1.StorageV1beta1Interface {
 	return c.storagev1beta1
+}
+func (c *clientset) StoragemigrationV1() k8s_io_client_go_kubernetes_typed_storagemigration_v1.StoragemigrationV1Interface {
+	return c.storagemigrationv1
 }
 func (c *clientset) StoragemigrationV1beta1() k8s_io_client_go_kubernetes_typed_storagemigration_v1beta1.StoragemigrationV1beta1Interface {
 	return c.storagemigrationv1beta1
@@ -362,8 +362,6 @@ func WrapWithMetrics(inner k8s_io_client_go_kubernetes.Interface, m metrics.Metr
 		authorizationv1beta1:          authorizationv1beta1.WithMetrics(inner.AuthorizationV1beta1(), m, clientType),
 		autoscalingv1:                 autoscalingv1.WithMetrics(inner.AutoscalingV1(), m, clientType),
 		autoscalingv2:                 autoscalingv2.WithMetrics(inner.AutoscalingV2(), m, clientType),
-		autoscalingv2beta1:            autoscalingv2beta1.WithMetrics(inner.AutoscalingV2beta1(), m, clientType),
-		autoscalingv2beta2:            autoscalingv2beta2.WithMetrics(inner.AutoscalingV2beta2(), m, clientType),
 		batchv1:                       batchv1.WithMetrics(inner.BatchV1(), m, clientType),
 		batchv1beta1:                  batchv1beta1.WithMetrics(inner.BatchV1beta1(), m, clientType),
 		certificatesv1:                certificatesv1.WithMetrics(inner.CertificatesV1(), m, clientType),
@@ -383,6 +381,7 @@ func WrapWithMetrics(inner k8s_io_client_go_kubernetes.Interface, m metrics.Metr
 		flowcontrolv1beta2:            flowcontrolv1beta2.WithMetrics(inner.FlowcontrolV1beta2(), m, clientType),
 		flowcontrolv1beta3:            flowcontrolv1beta3.WithMetrics(inner.FlowcontrolV1beta3(), m, clientType),
 		internalv1alpha1:              internalv1alpha1.WithMetrics(inner.InternalV1alpha1(), m, clientType),
+		lifecyclev1alpha1:             lifecyclev1alpha1.WithMetrics(inner.LifecycleV1alpha1(), m, clientType),
 		networkingv1:                  networkingv1.WithMetrics(inner.NetworkingV1(), m, clientType),
 		networkingv1beta1:             networkingv1beta1.WithMetrics(inner.NetworkingV1beta1(), m, clientType),
 		nodev1:                        nodev1.WithMetrics(inner.NodeV1(), m, clientType),
@@ -398,11 +397,12 @@ func WrapWithMetrics(inner k8s_io_client_go_kubernetes.Interface, m metrics.Metr
 		resourcev1beta1:               resourcev1beta1.WithMetrics(inner.ResourceV1beta1(), m, clientType),
 		resourcev1beta2:               resourcev1beta2.WithMetrics(inner.ResourceV1beta2(), m, clientType),
 		schedulingv1:                  schedulingv1.WithMetrics(inner.SchedulingV1(), m, clientType),
-		schedulingv1alpha1:            schedulingv1alpha1.WithMetrics(inner.SchedulingV1alpha1(), m, clientType),
+		schedulingv1alpha3:            schedulingv1alpha3.WithMetrics(inner.SchedulingV1alpha3(), m, clientType),
 		schedulingv1beta1:             schedulingv1beta1.WithMetrics(inner.SchedulingV1beta1(), m, clientType),
 		storagev1:                     storagev1.WithMetrics(inner.StorageV1(), m, clientType),
 		storagev1alpha1:               storagev1alpha1.WithMetrics(inner.StorageV1alpha1(), m, clientType),
 		storagev1beta1:                storagev1beta1.WithMetrics(inner.StorageV1beta1(), m, clientType),
+		storagemigrationv1:            storagemigrationv1.WithMetrics(inner.StoragemigrationV1(), m, clientType),
 		storagemigrationv1beta1:       storagemigrationv1beta1.WithMetrics(inner.StoragemigrationV1beta1(), m, clientType),
 	}
 }
@@ -423,8 +423,6 @@ func WrapWithTracing(inner k8s_io_client_go_kubernetes.Interface) k8s_io_client_
 		authorizationv1beta1:          authorizationv1beta1.WithTracing(inner.AuthorizationV1beta1(), "AuthorizationV1beta1"),
 		autoscalingv1:                 autoscalingv1.WithTracing(inner.AutoscalingV1(), "AutoscalingV1"),
 		autoscalingv2:                 autoscalingv2.WithTracing(inner.AutoscalingV2(), "AutoscalingV2"),
-		autoscalingv2beta1:            autoscalingv2beta1.WithTracing(inner.AutoscalingV2beta1(), "AutoscalingV2beta1"),
-		autoscalingv2beta2:            autoscalingv2beta2.WithTracing(inner.AutoscalingV2beta2(), "AutoscalingV2beta2"),
 		batchv1:                       batchv1.WithTracing(inner.BatchV1(), "BatchV1"),
 		batchv1beta1:                  batchv1beta1.WithTracing(inner.BatchV1beta1(), "BatchV1beta1"),
 		certificatesv1:                certificatesv1.WithTracing(inner.CertificatesV1(), "CertificatesV1"),
@@ -444,6 +442,7 @@ func WrapWithTracing(inner k8s_io_client_go_kubernetes.Interface) k8s_io_client_
 		flowcontrolv1beta2:            flowcontrolv1beta2.WithTracing(inner.FlowcontrolV1beta2(), "FlowcontrolV1beta2"),
 		flowcontrolv1beta3:            flowcontrolv1beta3.WithTracing(inner.FlowcontrolV1beta3(), "FlowcontrolV1beta3"),
 		internalv1alpha1:              internalv1alpha1.WithTracing(inner.InternalV1alpha1(), "InternalV1alpha1"),
+		lifecyclev1alpha1:             lifecyclev1alpha1.WithTracing(inner.LifecycleV1alpha1(), "LifecycleV1alpha1"),
 		networkingv1:                  networkingv1.WithTracing(inner.NetworkingV1(), "NetworkingV1"),
 		networkingv1beta1:             networkingv1beta1.WithTracing(inner.NetworkingV1beta1(), "NetworkingV1beta1"),
 		nodev1:                        nodev1.WithTracing(inner.NodeV1(), "NodeV1"),
@@ -459,11 +458,12 @@ func WrapWithTracing(inner k8s_io_client_go_kubernetes.Interface) k8s_io_client_
 		resourcev1beta1:               resourcev1beta1.WithTracing(inner.ResourceV1beta1(), "ResourceV1beta1"),
 		resourcev1beta2:               resourcev1beta2.WithTracing(inner.ResourceV1beta2(), "ResourceV1beta2"),
 		schedulingv1:                  schedulingv1.WithTracing(inner.SchedulingV1(), "SchedulingV1"),
-		schedulingv1alpha1:            schedulingv1alpha1.WithTracing(inner.SchedulingV1alpha1(), "SchedulingV1alpha1"),
+		schedulingv1alpha3:            schedulingv1alpha3.WithTracing(inner.SchedulingV1alpha3(), "SchedulingV1alpha3"),
 		schedulingv1beta1:             schedulingv1beta1.WithTracing(inner.SchedulingV1beta1(), "SchedulingV1beta1"),
 		storagev1:                     storagev1.WithTracing(inner.StorageV1(), "StorageV1"),
 		storagev1alpha1:               storagev1alpha1.WithTracing(inner.StorageV1alpha1(), "StorageV1alpha1"),
 		storagev1beta1:                storagev1beta1.WithTracing(inner.StorageV1beta1(), "StorageV1beta1"),
+		storagemigrationv1:            storagemigrationv1.WithTracing(inner.StoragemigrationV1(), "StoragemigrationV1"),
 		storagemigrationv1beta1:       storagemigrationv1beta1.WithTracing(inner.StoragemigrationV1beta1(), "StoragemigrationV1beta1"),
 	}
 }
@@ -484,8 +484,6 @@ func WrapWithLogging(inner k8s_io_client_go_kubernetes.Interface, logger logr.Lo
 		authorizationv1beta1:          authorizationv1beta1.WithLogging(inner.AuthorizationV1beta1(), logger.WithValues("group", "AuthorizationV1beta1")),
 		autoscalingv1:                 autoscalingv1.WithLogging(inner.AutoscalingV1(), logger.WithValues("group", "AutoscalingV1")),
 		autoscalingv2:                 autoscalingv2.WithLogging(inner.AutoscalingV2(), logger.WithValues("group", "AutoscalingV2")),
-		autoscalingv2beta1:            autoscalingv2beta1.WithLogging(inner.AutoscalingV2beta1(), logger.WithValues("group", "AutoscalingV2beta1")),
-		autoscalingv2beta2:            autoscalingv2beta2.WithLogging(inner.AutoscalingV2beta2(), logger.WithValues("group", "AutoscalingV2beta2")),
 		batchv1:                       batchv1.WithLogging(inner.BatchV1(), logger.WithValues("group", "BatchV1")),
 		batchv1beta1:                  batchv1beta1.WithLogging(inner.BatchV1beta1(), logger.WithValues("group", "BatchV1beta1")),
 		certificatesv1:                certificatesv1.WithLogging(inner.CertificatesV1(), logger.WithValues("group", "CertificatesV1")),
@@ -505,6 +503,7 @@ func WrapWithLogging(inner k8s_io_client_go_kubernetes.Interface, logger logr.Lo
 		flowcontrolv1beta2:            flowcontrolv1beta2.WithLogging(inner.FlowcontrolV1beta2(), logger.WithValues("group", "FlowcontrolV1beta2")),
 		flowcontrolv1beta3:            flowcontrolv1beta3.WithLogging(inner.FlowcontrolV1beta3(), logger.WithValues("group", "FlowcontrolV1beta3")),
 		internalv1alpha1:              internalv1alpha1.WithLogging(inner.InternalV1alpha1(), logger.WithValues("group", "InternalV1alpha1")),
+		lifecyclev1alpha1:             lifecyclev1alpha1.WithLogging(inner.LifecycleV1alpha1(), logger.WithValues("group", "LifecycleV1alpha1")),
 		networkingv1:                  networkingv1.WithLogging(inner.NetworkingV1(), logger.WithValues("group", "NetworkingV1")),
 		networkingv1beta1:             networkingv1beta1.WithLogging(inner.NetworkingV1beta1(), logger.WithValues("group", "NetworkingV1beta1")),
 		nodev1:                        nodev1.WithLogging(inner.NodeV1(), logger.WithValues("group", "NodeV1")),
@@ -520,11 +519,12 @@ func WrapWithLogging(inner k8s_io_client_go_kubernetes.Interface, logger logr.Lo
 		resourcev1beta1:               resourcev1beta1.WithLogging(inner.ResourceV1beta1(), logger.WithValues("group", "ResourceV1beta1")),
 		resourcev1beta2:               resourcev1beta2.WithLogging(inner.ResourceV1beta2(), logger.WithValues("group", "ResourceV1beta2")),
 		schedulingv1:                  schedulingv1.WithLogging(inner.SchedulingV1(), logger.WithValues("group", "SchedulingV1")),
-		schedulingv1alpha1:            schedulingv1alpha1.WithLogging(inner.SchedulingV1alpha1(), logger.WithValues("group", "SchedulingV1alpha1")),
+		schedulingv1alpha3:            schedulingv1alpha3.WithLogging(inner.SchedulingV1alpha3(), logger.WithValues("group", "SchedulingV1alpha3")),
 		schedulingv1beta1:             schedulingv1beta1.WithLogging(inner.SchedulingV1beta1(), logger.WithValues("group", "SchedulingV1beta1")),
 		storagev1:                     storagev1.WithLogging(inner.StorageV1(), logger.WithValues("group", "StorageV1")),
 		storagev1alpha1:               storagev1alpha1.WithLogging(inner.StorageV1alpha1(), logger.WithValues("group", "StorageV1alpha1")),
 		storagev1beta1:                storagev1beta1.WithLogging(inner.StorageV1beta1(), logger.WithValues("group", "StorageV1beta1")),
+		storagemigrationv1:            storagemigrationv1.WithLogging(inner.StoragemigrationV1(), logger.WithValues("group", "StoragemigrationV1")),
 		storagemigrationv1beta1:       storagemigrationv1beta1.WithLogging(inner.StoragemigrationV1beta1(), logger.WithValues("group", "StoragemigrationV1beta1")),
 	}
 }

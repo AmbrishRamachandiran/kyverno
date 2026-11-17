@@ -6,10 +6,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 )
 
 func TestConfiguration_GetMaxContextSize_Default(t *testing.T) {
 	cfg := NewDefaultConfiguration(false)
+	// Verify default value is initialized in constructor
+	assert.Equal(t, DefaultMaxContextSize, cfg.GetMaxContextSize())
+
 	// Load with nil configmap to trigger unload which sets defaults
 	cfg.Load(nil)
 
@@ -89,6 +93,58 @@ func TestConfiguration_GetMaxContextSize_ZeroDisablesLimit(t *testing.T) {
 	assert.Equal(t, int64(0), cfg.GetMaxContextSize())
 }
 
+func TestConfiguration_GetSuccessEventActions_Default(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	assert.Equal(t, 0, cfg.GetSuccessEventActions().Len())
+}
+
+func TestConfiguration_GetSuccessEventActions_Unload(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data:       map[string]string{"successEventActions": "Resource Mutated"},
+	})
+	assert.True(t, cfg.GetSuccessEventActions().Has("Resource Mutated"))
+
+	// unload should reset to empty
+	cfg.Load(nil)
+	assert.Equal(t, 0, cfg.GetSuccessEventActions().Len())
+}
+
+func TestConfiguration_GetSuccessEventActions_FromConfigMap(t *testing.T) {
+	tests := []struct {
+		name     string
+		value    string
+		expected sets.Set[string]
+	}{
+		{"single action", "Resource Mutated", sets.New("Resource Mutated")},
+		{"multiple actions", "Resource Mutated,Resource Passed", sets.New("Resource Mutated", "Resource Passed")},
+		{"whitespace trimmed", " Resource Mutated , Resource Passed ", sets.New("Resource Mutated", "Resource Passed")},
+		{"empty string", "", sets.New[string]()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := NewDefaultConfiguration(false)
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+				Data:       map[string]string{"successEventActions": tt.value},
+			}
+			cfg.Load(cm)
+			assert.Equal(t, tt.expected, cfg.GetSuccessEventActions())
+		})
+	}
+}
+
+func TestConfiguration_GetSuccessEventActions_NotSet(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data:       map[string]string{},
+	}
+	cfg.Load(cm)
+	assert.Equal(t, 0, cfg.GetSuccessEventActions().Len())
+}
+
 func TestConfiguration_GetMaxContextSize_KubernetesQuantityFormat(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -120,4 +176,79 @@ func TestConfiguration_GetMaxContextSize_KubernetesQuantityFormat(t *testing.T) 
 			assert.Equal(t, tt.expected, cfg.GetMaxContextSize())
 		})
 	}
+}
+
+func TestConfiguration_GetUpdateRequestCleanupTTL_InvalidValue(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "kyverno",
+			Namespace: "kyverno",
+		},
+		Data: map[string]string{
+			"updateRequestCleanupTTL": "invalid-ttl",
+		},
+	}
+
+	cfg.Load(cm)
+
+	// Should fall back to empty string on parse error
+	assert.Equal(t, "", cfg.GetUpdateRequestCleanupTTL())
+}
+
+func TestConfiguration_GetUpdateRequestCleanupTTL_Unload(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data:       map[string]string{"updateRequestCleanupTTL": "1h"},
+	})
+	assert.Equal(t, "1h", cfg.GetUpdateRequestCleanupTTL())
+
+	// unload should reset to empty string
+	cfg.Load(nil)
+	assert.Equal(t, "", cfg.GetUpdateRequestCleanupTTL())
+}
+
+func TestConfiguration_GetUpdateRequestThreshold(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+	assert.Equal(t, int64(UpdateRequestThreshold), cfg.GetUpdateRequestThreshold())
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data: map[string]string{
+			"updateRequestThreshold": "500",
+		},
+	}
+	cfg.Load(cm)
+	assert.Equal(t, int64(500), cfg.GetUpdateRequestThreshold())
+
+	// Invalid value falls back to default
+	cmInvalid := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data: map[string]string{
+			"updateRequestThreshold": "invalid",
+		},
+	}
+	cfg.Load(cmInvalid)
+	assert.Equal(t, int64(UpdateRequestThreshold), cfg.GetUpdateRequestThreshold())
+}
+
+func TestConfiguration_Unload_ResetsUpdateRequestThresholdAndMatchConditions(t *testing.T) {
+	cfg := NewDefaultConfiguration(false)
+
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "kyverno", Namespace: "kyverno"},
+		Data: map[string]string{
+			"updateRequestThreshold": "250",
+			"matchConditions":        `[{"name":"test-condition","expression":"true"}]`,
+		},
+	}
+	cfg.Load(cm)
+	assert.Equal(t, int64(250), cfg.GetUpdateRequestThreshold())
+	assert.Len(t, cfg.GetMatchConditions(), 1)
+
+	// Unload by passing nil
+	cfg.Load(nil)
+	assert.Equal(t, int64(UpdateRequestThreshold), cfg.GetUpdateRequestThreshold())
+	assert.Nil(t, cfg.GetMatchConditions())
 }

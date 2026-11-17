@@ -1,0 +1,338 @@
+package evaluator
+
+import (
+	"context"
+
+	"github.com/google/cel-go/cel"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
+	policieskyvernoio "github.com/kyverno/api/api/policies.kyverno.io"
+	"github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	policiesv1beta1 "github.com/kyverno/api/api/policies.kyverno.io/v1beta1"
+	engine "github.com/kyverno/kyverno/pkg/cel/compiler"
+	"github.com/kyverno/kyverno/pkg/cel/libs"
+	"github.com/kyverno/kyverno/pkg/cel/libs/gzip"
+	"github.com/kyverno/kyverno/pkg/cel/libs/imageverify"
+	"github.com/kyverno/kyverno/pkg/config"
+	imagecredentials "github.com/kyverno/kyverno/pkg/image/verification/credentials"
+	ivpolvar "github.com/kyverno/kyverno/pkg/image/verification/variables"
+	"github.com/kyverno/kyverno/pkg/logging"
+	"github.com/kyverno/kyverno/pkg/toggle"
+	kubeutils "github.com/kyverno/kyverno/pkg/utils/kube"
+	"github.com/kyverno/sdk/extensions/cel/libs/globalcontext"
+	"github.com/kyverno/sdk/extensions/cel/libs/hash"
+	"github.com/kyverno/sdk/extensions/cel/libs/http"
+	"github.com/kyverno/sdk/extensions/cel/libs/image"
+	"github.com/kyverno/sdk/extensions/cel/libs/imagedata"
+	"github.com/kyverno/sdk/extensions/cel/libs/json"
+	"github.com/kyverno/sdk/extensions/cel/libs/math"
+	"github.com/kyverno/sdk/extensions/cel/libs/random"
+	"github.com/kyverno/sdk/extensions/cel/libs/resource"
+	"github.com/kyverno/sdk/extensions/cel/libs/time"
+	"github.com/kyverno/sdk/extensions/cel/libs/transform"
+	"github.com/kyverno/sdk/extensions/cel/libs/user"
+	"github.com/kyverno/sdk/extensions/cel/libs/yaml"
+	"github.com/kyverno/sdk/extensions/registryclient"
+	"k8s.io/apimachinery/pkg/util/validation/field"
+	"k8s.io/apimachinery/pkg/util/version"
+	apiservercel "k8s.io/apiserver/pkg/cel"
+	"k8s.io/apiserver/pkg/cel/environment"
+	corev1listers "k8s.io/client-go/listers/core/v1"
+)
+
+var ivpolCompilerVersion = version.MajorMinor(1, 0)
+
+// Compiler creates immutable policies independently of admission requests.
+type Compiler interface {
+	Compile(policiesv1beta1.ImageValidatingPolicyLike, []*policiesv1beta1.PolicyException) (CompiledPolicy, field.ErrorList)
+}
+
+func NewCompiler(lister corev1listers.SecretLister) Compiler {
+	return NewCompilerWithTrace(lister, false)
+}
+
+// NewCompilerWithTrace is NewCompiler with decision tracing optionally turned on, for
+// `kyverno apply --explain`: when trace is true, match conditions, variables and validations
+// also get an explain-only tracking program and keep their AST (see compiler.TracedProgram), so
+// each evaluation can record what every expression resolved to. It is a separate constructor so
+// that NewCompiler, which admission, background and reports use, can never turn tracing on by
+// accident.
+func NewCompilerWithTrace(lister corev1listers.SecretLister, trace bool) Compiler {
+	return &compilerImpl{lister: lister, trace: trace}
+}
+
+type compilerImpl struct {
+	lister corev1listers.SecretLister
+	trace  bool
+}
+
+func (c *compilerImpl) Compile(ivpolicy policiesv1beta1.ImageValidatingPolicyLike, exceptions []*policiesv1beta1.PolicyException) (CompiledPolicy, field.ErrorList) {
+	ivpolicy, allErrs := imagecredentials.ScopePolicy(ivpolicy)
+	if len(allErrs) != 0 {
+		return nil, allErrs
+	}
+
+	lister := kubeutils.ScopeSecretLister(c.lister, ivpolicy.GetNamespace())
+	// A bare Secret name belongs to the policy's own namespace, and only a
+	// cluster-scoped policy falls back to Kyverno's. ScopePolicy has already
+	// rewritten namespaced references to canonical namespace/name, so this is
+	// belt-and-braces today, but it keeps a future path that reaches
+	// RemoteOptions without ScopePolicy from silently resolving bare names in
+	// the installation namespace again.
+	credentialNamespace := kubeutils.CredentialNamespace(lister, config.KyvernoNamespace())
+	spec := ivpolicy.GetSpec()
+
+	// by default, try to use the options built globally from flags
+	authOpts, nameOpts := registryclient.GlobalOptsOrDefault(context.Background())
+	if spec.Credentials != nil {
+		authOpts, nameOpts = imagecredentials.RemoteOptions(lister, *spec.Credentials, credentialNamespace, logging.GlobalLogger())
+	}
+
+	ivpolEnvSet, variablesProvider, err := c.createBaseIvpolEnv(libs.GetLibsCtx(), ivpolicy, authOpts)
+	if err != nil {
+		return nil, append(allErrs, field.InternalError(nil, err))
+	}
+
+	env, err := ivpolEnvSet.Env(environment.StoredExpressions)
+	if err != nil {
+		return nil, append(allErrs, field.InternalError(nil, err))
+	}
+
+	path := field.NewPath("spec")
+	matchConditions := make([]cel.Program, 0, len(spec.MatchConditions))
+	var tracedMatchConditions []engine.TracedProgram
+	{
+		path := path.Child("matchConditions")
+		programs, traced, errs := engine.CompileMatchConditionsWithTrace(path, env, c.trace, spec.MatchConditions...)
+		if errs != nil {
+			return nil, append(allErrs, errs...)
+		}
+		matchConditions = append(matchConditions, programs...)
+		for _, t := range traced {
+			tracedMatchConditions = append(tracedMatchConditions, withoutVerificationTwin(t))
+		}
+	}
+	matchImageEnv, err := engine.NewMatchImageEnv()
+	if err != nil {
+		return nil, append(allErrs, field.InternalError(nil, err))
+	}
+	matchImageReferences, errs := engine.CompileMatchImageReferences(path.Child("matchImageReferences"), matchImageEnv, spec.MatchImageReferences...)
+	if errs != nil {
+		return nil, append(allErrs, errs...)
+	}
+
+	var imageExtractors engine.ImageExtractorProfiles
+	if spec.EvaluationMode() == policieskyvernoio.EvaluationModeJSON {
+		imageExtractors[0], errs = engine.CompileImageExtractors(path.Child("images"), env, nil, spec.ImageExtractors...)
+	} else {
+		imageExtractors, errs = engine.CompileImageExtractorProfiles(path.Child("images"), env, spec.ImageExtractors...)
+	}
+	if errs != nil {
+		return nil, append(allErrs, errs...)
+	}
+
+	variables, tracedVariables, errs := engine.CompileVariablesWithTrace(path.Child("variables"), env, variablesProvider, c.trace, spec.Variables...)
+	if errs != nil {
+		return nil, append(allErrs, errs...)
+	}
+	for name, t := range tracedVariables {
+		tracedVariables[name] = withoutVerificationTwin(t)
+	}
+
+	var compiledAttestors []*ivpolvar.CompiledAttestor
+	{
+		path := path.Child("attestors")
+		compiledAttestors, errs = ivpolvar.CompileAttestors(path, spec.Attestors, env)
+		if errs != nil {
+			return nil, append(allErrs, errs...)
+		}
+	}
+
+	validations := make([]engine.Validation, 0, len(spec.Validations))
+	{
+		path := path.Child("validations")
+		for i, rule := range spec.Validations {
+			path := path.Index(i)
+			program, errs := engine.CompileValidation(path, env, rule, c.trace)
+			if errs != nil {
+				return nil, append(allErrs, errs...)
+			}
+			if callsImageVerification(program.AST) {
+				// see withoutVerificationTwin: never re-run an expression that verifies images
+				program.Traced = nil
+			}
+			validations = append(validations, program)
+		}
+	}
+
+	auditAnnotations := make(map[string]cel.Program, len(spec.AuditAnnotations))
+	{
+		path := path.Child("auditAnnotations")
+		for i, auditAnnotation := range spec.AuditAnnotations {
+			path := path.Index(i)
+			program, errs := engine.CompileAuditAnnotation(path, env, auditAnnotation)
+			if errs != nil {
+				return nil, append(allErrs, errs...)
+			}
+			auditAnnotations[auditAnnotation.Key] = program
+		}
+	}
+
+	compiledExceptions := make([]engine.Exception, 0, len(exceptions))
+	for _, polex := range exceptions {
+		polexMatchConditions, errs := engine.CompileMatchConditions(field.NewPath("spec").Child("matchConditions"), env, polex.Spec.MatchConditions...)
+		if errs != nil {
+			return nil, append(allErrs, errs...)
+		}
+		compiledExceptions = append(compiledExceptions, engine.Exception{
+			Exception:       polex,
+			MatchConditions: polexMatchConditions,
+		})
+	}
+
+	if len(allErrs) > 0 {
+		return nil, allErrs
+	}
+
+	ivFuncs, err := imageverify.NewIvFuncs(logging.WithName("ivpol/imageverify").WithValues("policy", ivpolicy.GetName(), "namespace", ivpolicy.GetNamespace()), ivpolicy, lister, env.CELTypeAdapter(), matchImageReferences)
+	if err != nil {
+		return nil, field.ErrorList{field.InternalError(path, err)}
+	}
+
+	return &compiledPolicy{
+		namespace:             ivpolicy.GetNamespace(),
+		failurePolicy:         ivpolicy.GetFailurePolicy(toggle.FromContext(context.TODO()).ForceFailurePolicyIgnore()),
+		verifyDigest:          spec.ValidationConfigurations.VerifyDigest == nil || *spec.ValidationConfigurations.VerifyDigest,
+		matchConditions:       matchConditions,
+		matchImageReferences:  matchImageReferences,
+		validations:           validations,
+		auditAnnotations:      auditAnnotations,
+		imageExtractors:       imageExtractors,
+		attestors:             compiledAttestors,
+		attestationList:       getAttestations(spec.Attestations),
+		nameOpts:              nameOpts,
+		authOpts:              authOpts,
+		exceptions:            compiledExceptions,
+		variables:             variables,
+		validationConfig:      spec.ValidationConfigurations,
+		trace:                 c.trace,
+		tracedMatchConditions: tracedMatchConditions,
+		tracedVariables:       tracedVariables,
+		ivFuncs:               ivFuncs,
+	}, nil
+}
+
+func (c *compilerImpl) createBaseIvpolEnv(libsctx libs.Context, ivpol policiesv1beta1.ImageValidatingPolicyLike, remoteOpts []remote.Option) (*environment.EnvSet, *engine.VariablesProvider, error) {
+	baseOpts := engine.DefaultEnvOptions()
+	baseOpts = append(baseOpts,
+		cel.Variable(engine.ResourceKey, resource.ContextType),
+		cel.Variable(engine.ImagesKey, cel.MapType(cel.StringType, cel.ListType(cel.StringType))),
+		cel.Variable(engine.AttestorsKey, cel.MapType(cel.StringType, cel.DynType)),
+		cel.Variable(engine.AttestationsKey, cel.MapType(cel.StringType, cel.StringType)),
+		cel.Variable(engine.ObjectKey, cel.DynType),
+	)
+
+	if ivpol.GetSpec().EvaluationMode() == policieskyvernoio.EvaluationModeKubernetes {
+		baseOpts = append(baseOpts,
+			cel.Variable(engine.RequestKey, engine.RequestType.CelType()),
+			cel.Variable(engine.NamespaceObjectKey, engine.NamespaceType.CelType()),
+			cel.Variable(engine.OldObjectKey, cel.DynType),
+			cel.Variable(engine.VariablesKey, engine.VariablesType),
+		)
+	}
+
+	base := environment.MustBaseEnvSet(ivpolCompilerVersion)
+	env, err := base.Env(environment.StoredExpressions)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	variablesProvider := engine.NewVariablesProvider(env.CELTypeProvider())
+	declProvider := apiservercel.NewDeclTypeProvider(engine.NamespaceType, engine.RequestType)
+	declOptions, err := declProvider.EnvOptions(variablesProvider)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	baseOpts = append(baseOpts, declOptions...)
+
+	namespace := ivpol.GetNamespace()
+	libEnvOpts := []cel.EnvOption{
+		globalcontext.Lib(
+			globalcontext.Context{ContextInterface: engine.ConfineGlobalContext(libsctx, namespace)},
+			globalcontext.Latest(),
+		),
+		image.Lib(
+			image.Latest(),
+		),
+		imagedata.Lib(
+			imagedata.Context{ContextInterface: libsctx},
+			imagedata.Latest(),
+			remoteOpts,
+		),
+		imageverify.Lib(),
+		resource.Lib(
+			resource.Context{ContextInterface: libsctx},
+			namespace,
+			resource.Latest(),
+		),
+		user.Lib(
+			user.Latest(),
+		),
+		math.Lib(
+			math.Latest(),
+		),
+		hash.Lib(
+			hash.Latest(),
+		),
+		json.Lib(
+			&json.JsonImpl{},
+			json.Latest(),
+		),
+		yaml.Lib(
+			&yaml.YamlImpl{},
+			yaml.Latest(),
+		),
+		random.Lib(
+			random.Latest(),
+		),
+		time.Lib(
+			time.Latest(),
+		),
+		transform.Lib(
+			transform.Latest(),
+		),
+		gzip.Lib(
+			gzip.Latest(), 0,
+		),
+		http.Lib(
+			http.Context{ContextInterface: libs.NewMockAwareHTTPContext(engine.NewLazyCELHTTPContext(namespace), libsctx.GetHTTPMocks())},
+			http.Latest(),
+		),
+	}
+
+	// engine.BaseEnvSet (aliased import of pkg/cel/compiler), not base.Extend: registers
+	// CostLib last, in this one Extend call (see pkg/cel/compiler/env.go).
+	extendedBase, err := engine.BaseEnvSet(ivpolCompilerVersion,
+		environment.VersionedOptions{
+			IntroducedVersion: ivpolCompilerVersion,
+			EnvOptions:        baseOpts,
+		},
+		// libaries
+		environment.VersionedOptions{
+			IntroducedVersion: ivpolCompilerVersion,
+			EnvOptions:        libEnvOpts,
+		},
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return extendedBase, variablesProvider, nil
+}
+
+func getAttestations(att []v1beta1.Attestation) map[string]string {
+	m := make(map[string]string)
+	for _, v := range att {
+		m[v.Name] = v.Name
+	}
+	return m
+}

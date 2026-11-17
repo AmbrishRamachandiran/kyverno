@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	imageverifycache "github.com/kyverno/kyverno/pkg/image/verification/cache"
 	"github.com/kyverno/kyverno/pkg/leaderelection"
 	"github.com/kyverno/kyverno/pkg/logging"
 	"github.com/kyverno/kyverno/pkg/toggle"
@@ -37,6 +38,7 @@ var (
 	metricsServerIP      string
 	transportCreds       string
 	disableMetricsExport bool
+	exemplarFilter       string
 	// kubeconfig
 	kubeconfig           string
 	clientRateLimitQPS   float64
@@ -49,10 +51,11 @@ var (
 	enableConfigMapCaching bool
 	openreportsEnabled     bool
 	// cosign
-	enableTUF  bool
-	tufMirror  string
-	tufRoot    string
-	tufRootRaw string
+	enableTUF           bool
+	enableCosignLogging bool
+	tufMirror           string
+	tufRoot             string
+	tufRootRaw          string
 	// registry client
 	imagePullSecrets          string
 	allowInsecureRegistry     bool
@@ -62,6 +65,8 @@ var (
 	// cleanupServer port and host for listening address
 	cleanupServerHost string
 	cleanupServerPort int
+	// image verify payload limit
+	imageVerifyPayloadLimit int64
 	// image verify cache
 	imageVerifyCacheEnabled     bool
 	imageVerifyCacheTTLDuration time.Duration
@@ -118,6 +123,7 @@ func initMetricsFlags() {
 	flag.DurationVar(&metricsRenewBefore, "metricsRenewBefore", 15*24*time.Hour, "The certificate renewal time before expiration for metrics TLS certificates.")
 	flag.StringVar(&metricsServerIP, "metricsServerIP", "", "IP address where metrics server runs. Used to add IP addresses to the metrics TLS certificate SANs. Only required if accessing metrics endpoint out-of-cluster by IP address.")
 	flag.BoolVar(&disableMetricsExport, "disableMetrics", false, "Set this flag to 'true' to disable metrics.")
+	flag.StringVar(&exemplarFilter, "exemplarFilter", "trace-based", "Configure the exemplar filter for metrics. Supported values: always-off, trace-based, always-on. Default is trace-based (exemplars collected from sampled traces).")
 }
 
 func initKubeconfigFlags(qps float64, burst int, eventsQPS float64, eventsBurst int) {
@@ -147,6 +153,7 @@ func initDeferredLoadingFlags() {
 
 func initCosignFlags() {
 	flag.BoolVar(&enableTUF, "enableTuf", false, "enable tuf for private sigstore deployments")
+	flag.BoolVar(&enableCosignLogging, "enableCosignLogging", false, "enable debug logging for cosign")
 	flag.StringVar(&tufMirror, "tufMirror", tuf.DefaultRemoteRoot, "Alternate TUF mirror for sigstore. If left blank, public sigstore one is used for cosign verification.")
 	flag.StringVar(&tufRoot, "tufRoot", "", "Path to alternate TUF root.json for sigstore (url or env). If left blank, public sigstore one is used for cosign verification.")
 	flag.StringVar(&tufRootRaw, "tufRootRaw", "", "The raw body of alternate TUF root.json for sigstore. If left blank, public sigstore one is used for cosign verification.")
@@ -156,11 +163,12 @@ func initRegistryClientFlags() {
 	flag.BoolVar(&allowInsecureRegistry, "allowInsecureRegistry", false, "Whether to allow insecure connections to registries. Don't use this for anything but testing.")
 	flag.StringVar(&imagePullSecrets, "imagePullSecrets", "", "Secret resource names for image registry access credentials.")
 	flag.StringVar(&registryCredentialHelpers, "registryCredentialHelpers", "", "Credential helpers to enable (default,google,amazon,azure,github). No helpers are added when this flag is empty.")
+	flag.Int64Var(&imageVerifyPayloadLimit, "imageVerifyPayloadLimit", 0, "Maximum decompressed size in bytes of a sigstore bundle or attestation payload read during image validating policy verification. Raise it to verify payloads larger than the 10000000 byte default, such as large SBOM attestations. 0 keeps the default.")
 }
 
 func initImageVerifyCacheFlags() {
 	flag.BoolVar(&imageVerifyCacheEnabled, "imageVerifyCacheEnabled", true, "Enable a TTL cache for verified images.")
-	flag.Int64Var(&imageVerifyCacheMaxSize, "imageVerifyCacheMaxSize", 1000, "Maximum number of keys that can be stored in the TTL cache. Keys are a combination of policy elements along with the image reference. Default is 1000. 0 sets the value to default.")
+	flag.Int64Var(&imageVerifyCacheMaxSize, "imageVerifyCacheMaxSize", imageverifycache.DefaultMaxSize, "Maximum size of the TTL cache in bytes. Each entry is charged the size of the attestation payloads it stores plus a small fixed overhead, so actual memory use is somewhat higher than this value. Default is 10485760 (10 MiB). 0 sets the value to default.")
 	flag.DurationVar(&imageVerifyCacheTTLDuration, "imageVerifyCacheTTLDuration", 60*time.Minute, "Maximum TTL value for a cache expressed as duration. Default is 60m. 0 sets the value to default.")
 }
 

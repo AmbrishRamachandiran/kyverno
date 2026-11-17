@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/config"
@@ -57,6 +58,232 @@ func TestEventGenerator(t *testing.T) {
 	case <-time.After(wait.ForeverTestTimeout):
 		t.Fatal("event not created")
 	}
+}
+
+// newTestEventGenerator creates an event generator for testing and starts its workers.
+// The returned channel receives a signal each time an event is created.
+func newTestEventGenerator(ctx context.Context, cfg config.Configuration) (*controller, chan struct{}) {
+	clientset := fake.NewSimpleClientset()
+	eventCreated := make(chan struct{}, 10)
+	clientset.PrependReactor("create", "events", func(action clienttesting.Action) (handled bool, ret runtime.Object, err error) {
+		eventCreated <- struct{}{}
+		return true, nil, nil
+	})
+	gen := NewEventGenerator(clientset.EventsV1(), logr.Discard(), 1000, cfg)
+	go gen.Run(ctx, Workers)
+	return gen, eventCreated
+}
+
+// expectEvent waits for an event to be created or fails the test.
+func expectEvent(t *testing.T, ch chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(wait.ForeverTestTimeout):
+		t.Fatal(msg)
+	}
+}
+
+// expectNoEvent asserts that no event is created within a short window.
+// Dropped events never reach the queue, so a brief timeout is sufficient.
+func expectNoEvent(t *testing.T, ch chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+		t.Fatal(msg)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestEventGenerator_LegacyPolicyPresent_DefaultsToWarning(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	clientset := fake.NewSimpleClientset()
+	createdCh := make(chan *eventsv1.Event, 1)
+	clientset.PrependReactor("create", "events", func(action clienttesting.Action) (handled bool, ret runtime.Object, err error) {
+		createdCh <- action.(clienttesting.CreateAction).GetObject().(*eventsv1.Event)
+		return true, nil, nil
+	})
+
+	gen := NewEventGenerator(clientset.EventsV1(), logr.Discard(), 1000, config.NewDefaultConfiguration(false))
+	go gen.Run(ctx, Workers)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{
+			APIVersion: "apps/v1",
+			Kind:       "Deployment",
+			Name:       "kyverno-admission-controller",
+			Namespace:  "kyverno",
+			UID:        "test-uid",
+		},
+		Reason:  LegacyPolicyPresent,
+		Action:  None,
+		Message: "legacy kyverno.io policy resources are still present",
+		Source:  AdmissionController,
+	})
+
+	var created *eventsv1.Event
+	select {
+	case created = <-createdCh:
+	case <-time.After(wait.ForeverTestTimeout):
+		t.Fatal("LegacyPolicyPresent event was not created")
+	}
+
+	if created.Type != corev1.EventTypeWarning {
+		t.Errorf("expected LegacyPolicyPresent event type to default to Warning, got %q", created.Type)
+	}
+	if created.Reason != string(LegacyPolicyPresent) {
+		t.Errorf("expected reason %q, got %q", LegacyPolicyPresent, created.Reason)
+	}
+	if created.Regarding.Name != "kyverno-admission-controller" {
+		t.Errorf("expected Regarding.Name to be populated, got %q", created.Regarding.Name)
+	}
+}
+
+func TestEventGenerator_PolicyApplied_SuccessEventsDisabled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourcePassed,
+		Message:   "validation passed",
+		Source:    AdmissionController,
+	})
+
+	expectNoEvent(t, eventCreated, "PolicyApplied event should have been dropped")
+}
+
+func TestEventGenerator_PolicyApplied_SuccessEventsEnabled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		Data: map[string]string{"generateSuccessEvents": "true"},
+	})
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourcePassed,
+		Message:   "validation passed",
+		Source:    AdmissionController,
+	})
+
+	expectEvent(t, eventCreated, "PolicyApplied event should have been created when generateSuccessEvents is true")
+}
+
+func TestEventGenerator_SuccessEventActions_FiltersByAction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		Data: map[string]string{
+			"generateSuccessEvents": "true",
+			"successEventActions":   "Resource Mutated",
+		},
+	})
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourceMutated,
+		Message:   "resource mutated",
+		Source:    AdmissionController,
+	})
+
+	expectEvent(t, eventCreated, "mutation event should have been created with successEventActions=Resource Mutated")
+}
+
+func TestEventGenerator_SuccessEventActions_DropsNonMatchingAction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		Data: map[string]string{
+			"generateSuccessEvents": "true",
+			"successEventActions":   "Resource Mutated",
+		},
+	})
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourcePassed,
+		Message:   "validation passed",
+		Source:    AdmissionController,
+	})
+
+	expectNoEvent(t, eventCreated, "validation event should have been dropped when successEventActions only includes Resource Mutated")
+}
+
+func TestEventGenerator_SuccessEventActions_SuccessEventsDisabledOverrides(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		Data: map[string]string{
+			"generateSuccessEvents": "false",
+			"successEventActions":   "Resource Mutated",
+		},
+	})
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourceMutated,
+		Message:   "resource mutated",
+		Source:    AdmissionController,
+	})
+
+	expectNoEvent(t, eventCreated, "event should have been dropped when generateSuccessEvents is false")
+}
+
+func TestEventGenerator_SuccessEventActions_MultipleActions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	cfg := config.NewDefaultConfiguration(false)
+	cfg.Load(&corev1.ConfigMap{
+		Data: map[string]string{
+			"generateSuccessEvents": "true",
+			"successEventActions":   "Resource Mutated,Resource Passed",
+		},
+	})
+	gen, eventCreated := newTestEventGenerator(ctx, cfg)
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourceMutated,
+		Message:   "resource mutated",
+		Source:    AdmissionController,
+	})
+
+	expectEvent(t, eventCreated, "mutation event should pass with multiple successEventActions")
+
+	gen.Add(Info{
+		Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test-pod-2", Namespace: "default"},
+		Reason:    PolicyApplied,
+		Action:    ResourcePassed,
+		Message:   "validation passed",
+		Source:    AdmissionController,
+	})
+
+	expectEvent(t, eventCreated, "validation event should pass with multiple successEventActions")
 }
 
 // TestEventNameSanitization tests that events with invalid RFC 1123 characters in their names are sanitized correctly
@@ -156,5 +383,37 @@ func TestEventNameSanitization(t *testing.T) {
 	if event != nil && !strings.HasPrefix(event.Name, sanitizedResourceName) {
 		t.Errorf("Expected name to start with '%s', got: %s",
 			sanitizedResourceName, event.Name)
+	}
+}
+
+func TestEmitEventTruncatesMessageOnRuneBoundary(t *testing.T) {
+	for _, prefix := range []int{1019, 1020, 1021} {
+		mockController := &controller{
+			logger: logging.WithName("mock-controller"),
+			queue: workqueue.NewTypedRateLimitingQueueWithConfig(
+				workqueue.DefaultTypedControllerRateLimiter[any](),
+				workqueue.TypedRateLimitingQueueConfig[any]{Name: "test-queue"},
+			),
+			clock:    clock.RealClock{},
+			hostname: "test-host",
+		}
+		mockController.emitEvent(Info{
+			Regarding: corev1.ObjectReference{Kind: "Pod", Name: "test", Namespace: "default"},
+			Reason:    PolicyViolation,
+			Message:   strings.Repeat("a", prefix) + strings.Repeat("中", 100),
+			Action:    ResourceBlocked,
+			Source:    AdmissionController,
+		})
+		queueItem, _ := mockController.queue.Get()
+		event := queueItem.(*eventsv1.Event)
+		if !utf8.ValidString(event.Note) {
+			t.Errorf("prefix %d: note is not valid UTF-8", prefix)
+		}
+		if len(event.Note) > 1024 {
+			t.Errorf("prefix %d: note is %d bytes, want at most 1024", prefix, len(event.Note))
+		}
+		if !strings.HasSuffix(event.Note, "...") {
+			t.Errorf("prefix %d: note does not end with ...", prefix)
+		}
 	}
 }

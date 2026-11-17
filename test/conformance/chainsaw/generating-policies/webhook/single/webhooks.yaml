@@ -33,12 +33,13 @@ webhooks:
     apiVersions:
     - v1
     operations:
-    - CREATE
-    - UPDATE
-    - DELETE
     - CONNECT
+    - CREATE
+    - DELETE
+    - UPDATE
     resources:
     - namespaces
     scope: '*'
   sideEffects: NoneOnDryRun
   timeoutSeconds: 10
+- name: protect-generation-labels.kyverno.svc

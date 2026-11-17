@@ -2,11 +2,12 @@ package event
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-logr/logr"
 	"github.com/kyverno/kyverno/pkg/client/clientset/versioned/scheme"
@@ -54,6 +55,7 @@ type controller struct {
 	metrics         metrics.EventMetrics
 	maxQueuedEvents int
 	cfg             config.Configuration
+	warnOnce        sync.Once
 }
 
 // NewEventGenerator to generate a new event controller
@@ -92,12 +94,24 @@ func (gen *controller) Add(infos ...Info) {
 			continue
 		}
 		if gen.omitEvents.Has(string(info.Reason)) {
+			if info.Reason == PolicyApplied && gen.cfg.GetGenerateSuccessEvents() {
+				gen.warnOnce.Do(func() {
+					logger.Error(nil, "generateSuccessEvents is enabled but PolicyApplied is in omitEvents -- no success events will be generated, remove PolicyApplied from --omitEvents to fix this")
+				})
+			}
 			logger.V(6).Info("omitting event", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
 			continue
 		}
-		if info.Reason == PolicyApplied && !gen.cfg.GetGenerateSuccessEvents() {
-			logger.V(6).Info("skipping event creation for successful policy applied", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
-			continue
+		if info.Reason == PolicyApplied {
+			if !gen.cfg.GetGenerateSuccessEvents() {
+				logger.V(6).Info("skipping event creation for successful policy applied", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
+				continue
+			}
+			actions := gen.cfg.GetSuccessEventActions()
+			if actions.Len() > 0 && !actions.Has(string(info.Action)) {
+				logger.V(6).Info("skipping event creation, action not in successEventActions", "kind", info.Regarding.Kind, "name", info.Regarding.Name, "namespace", info.Regarding.Namespace, "reason", info.Reason, "action", info.Action, "note", info.Message)
+				continue
+			}
 		}
 
 		gen.emitEvent(info)
@@ -208,7 +222,11 @@ func (gen *controller) emitEvent(key Info) {
 	}
 	message := key.Message
 	if len(message) > 1024 {
-		message = message[0:1021] + "..."
+		cut := 1021
+		for cut > 0 && !utf8.RuneStart(message[cut]) {
+			cut--
+		}
+		message = message[:cut] + "..."
 	}
 
 	// Sanitize refRegarding.Name to comply with RFC 1123 subdomain naming requirements
@@ -216,7 +234,7 @@ func (gen *controller) emitEvent(key Info) {
 
 	event := &eventsv1.Event{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      fmt.Sprintf("%v.%x", sanitizedName, t.UnixNano()),
+			Name:      util.GenerateEventName(sanitizedName, t.UnixNano()),
 			Namespace: namespace,
 		},
 		EventTime:           timestamp,
